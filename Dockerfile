@@ -11,4 +11,4 @@ RUN uv sync --frozen
 COPY . .
 
 # Run your MCP (adjust main.py if your entry point is different)
-CMD ["python", "main.py"]
+CMD ["python", "server.py"]
