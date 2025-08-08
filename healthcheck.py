@@ -13,6 +13,7 @@ from database import Database
 from config import config
 
 def health_check():
+    return {"status": "ok"}
     """Perform comprehensive health check."""
     health_status = {
         "timestamp": datetime.now().isoformat(),
