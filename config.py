@@ -26,7 +26,7 @@ class Config:
         
         # Server configuration
         self.server_host = os.getenv('SERVER_HOST', '0.0.0.0')
-        self.server_port = int(os.getenv('SERVER_PORT', '8000'))
+        self.server_port = int(os.getenv('SERVER_PORT', '8080'))
         self.debug_mode = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
         
         # Security configuration
@@ -200,7 +200,7 @@ DATABASE_BACKUP_INTERVAL=3600
 
 # Server Configuration
 SERVER_HOST=0.0.0.0
-SERVER_PORT=8000
+SERVER_PORT=8080
 DEBUG_MODE=false
 
 # OAuth 2.1 Authentication (Required in production)
