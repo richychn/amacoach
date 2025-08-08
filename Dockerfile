@@ -1,22 +1,26 @@
-# Use a valid derived image with Python 3.11 + uv pre-installed
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+# Use official Python base image
+FROM python:3.10-slim
 
-# Set working directory
+# Install uv (fast Python package manager)
+RUN pip install --upgrade pip && pip install uv
+
+# Set work directory
 WORKDIR /app
 
-# Copy dependency files first for layer caching
+# Copy dependency files first for better caching
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies using uv (leveraging cache for speed)
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project
+# Install dependencies with uv
+RUN uv pip install --system --no-deps --require-hashes -r <(uv pip compile --generate-hashes pyproject.toml)
 
-# Copy application code
+# Copy the rest of the application code
 COPY . .
 
-# Final dependency sync (including project code)
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen
+# Expose port (Railway uses $PORT env variable)
+EXPOSE 8000
 
-# Default command (adjust if your entrypoint differs)
-CMD ["python", "main.py"]
+# Set environment variables for Railway
+ENV PORT=8000
+
+# Start the server
+CMD ["python", "server.py"]
