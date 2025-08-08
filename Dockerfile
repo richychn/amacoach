@@ -10,8 +10,10 @@ WORKDIR /app
 # Copy dependency files first for better caching
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies with uv
-RUN uv pip install --system --no-deps --require-hashes -r <(uv pip compile --generate-hashes pyproject.toml)
+
+# Compile requirements with uv, then install
+RUN uv pip compile --generate-hashes pyproject.toml -o requirements.txt \
+    && uv pip install --system --no-deps --require-hashes -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .
