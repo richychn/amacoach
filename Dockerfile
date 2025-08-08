@@ -1,14 +1,22 @@
-# Use Astral's official uv image with Python 3.11
-FROM ghcr.io/astral-sh/uv:python3.11
+# Use a valid derived image with Python 3.11 + uv pre-installed
+FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
-# Copy dependency files first for better caching
+# Set working directory
+WORKDIR /app
+
+# Copy dependency files first for layer caching
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies from uv.lock
-RUN uv sync --frozen
+# Install dependencies using uv (leveraging cache for speed)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project
 
-# Copy the rest of your code
+# Copy application code
 COPY . .
 
-# Run your MCP (adjust main.py if your entry point is different)
-CMD ["python", "server.py"]
+# Final dependency sync (including project code)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
+
+# Default command (adjust if your entrypoint differs)
+CMD ["python", "main.py"]
