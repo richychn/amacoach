@@ -1,22 +1,14 @@
-# Use a small Python base image
-FROM python:3.11-slim
+# Use Astral's official uv image with Python 3.11
+FROM ghcr.io/astral-sh/uv:python3.11
 
-# Install curl (needed for uv installer) and any basic build deps
-RUN apt-get update && apt-get install -y curl gcc libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv (Astral package manager)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# Copy dependency files first (to leverage Docker layer caching)
+# Copy dependency files first for better caching
 COPY pyproject.toml uv.lock ./
 
-# Install dependencies
+# Install dependencies from uv.lock
 RUN uv sync --frozen
 
-# Copy the rest of your application code
+# Copy the rest of your code
 COPY . .
 
-# Default command to run your MCP
+# Run your MCP (adjust main.py if your entry point is different)
 CMD ["python", "main.py"]
