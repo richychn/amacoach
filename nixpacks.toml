@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ['python310']
+
+[phases.install]
+cmds = ['uv sync --frozen']
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = 'uv run python server.py'
