@@ -104,19 +104,8 @@ class Database:
                 )
             """)
 
-            # Create trigger to enforce max 3 active plans per user
-            cursor.execute("""
-                CREATE TRIGGER IF NOT EXISTS enforce_max_active_plans
-                BEFORE INSERT ON workout_plans
-                WHEN NEW.is_active = 1
-                BEGIN
-                    SELECT CASE
-                        WHEN (SELECT COUNT(*) FROM workout_plans 
-                              WHERE user_id = NEW.user_id AND is_active = 1) >= 3
-                        THEN RAISE(ABORT, 'User cannot have more than 3 active workout plans')
-                    END;
-                END
-            """)
+            # Note: Removed hard 3-plan constraint trigger to allow unlimited active plans
+            # Plan lifecycle management is now handled in application logic
 
             # Create PlannedExercise table
             cursor.execute("""
@@ -335,8 +324,19 @@ class Database:
 
     # Workout Plan operations
     def save_workout_plan(self, user_id: str, plan_name: str, 
-                         exercises_list: List[Dict], notes: Optional[str] = None) -> WorkoutPlan:
-        """Save workout plan with exercises, enforcing 3-plan constraint."""
+                         exercises_list: List[Dict], notes: Optional[str] = None,
+                         create_as_set: bool = False) -> WorkoutPlan:
+        """Save workout plan with exercises. No hard limit on number of plans.
+        
+        Args:
+            user_id: User ID
+            plan_name: Name of the workout plan
+            exercises_list: List of exercise dictionaries
+            notes: Optional notes
+            create_as_set: If True, this is part of a 3-plan set creation by Claude.
+                          When the first plan of a set is created, all existing active plans
+                          will be marked inactive to maintain clean plan lifecycle.
+        """
         with self.get_cursor() as cursor:
             # Get user's current cycle number
             user = self.get_user(user_id)
@@ -345,8 +345,17 @@ class Database:
 
             created_date = datetime.now()
             
+            # If this is the first plan of a Claude-generated 3-plan set,
+            # mark all existing active plans as inactive
+            if create_as_set:
+                cursor.execute("""
+                    UPDATE workout_plans 
+                    SET is_active = 0 
+                    WHERE user_id = ? AND is_active = 1
+                """, (user_id,))
+            
             try:
-                # Insert workout plan (trigger will enforce 3-plan constraint)
+                # Insert workout plan without constraint enforcement
                 cursor.execute("""
                     INSERT INTO workout_plans (user_id, plan_name, cycle_number, is_active, created_date, notes)
                     VALUES (?, ?, ?, ?, ?, ?)
@@ -378,8 +387,6 @@ class Database:
                 )
 
             except sqlite3.IntegrityError as e:
-                if "cannot have more than 3 active workout plans" in str(e):
-                    raise ValueError("User already has 3 active workout plans. Cannot create more.")
                 raise DatabaseError(f"Failed to save workout plan: {str(e)}")
 
     def load_workout_plan(self, user_id: str, plan_id: Optional[int] = None) -> Union[Dict[str, Any], List[WorkoutPlan], None]:
@@ -465,6 +472,11 @@ class Database:
                 SET is_active = 0 
                 WHERE user_id = ? AND is_active = 1
             """, (user_id,))
+
+    def start_new_plan_set(self, user_id: str) -> None:
+        """Mark the start of a new 3-plan set by deactivating all existing active plans.
+        This is used when Claude creates complementary workout plans."""
+        self.deactivate_user_plans(user_id)
 
     # Personal Record operations
     def save_personal_record(self, user_id: str, exercise_name: str, record_type: str,

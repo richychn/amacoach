@@ -5,7 +5,11 @@ build/
 dist/
 wheels/
 *.egg-info
+run_mcp_server.sh
 
 # Virtual environments
 .venv
 .env
+
+# Configuration files
+logs*

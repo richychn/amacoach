@@ -1,13 +1,14 @@
 """
 AmaCoach MCP Server Implementation.
 
-This is the main MCP server that exposes the 6 required tools to Claude.ai:
+This is the main MCP server that exposes the 7 required tools to Claude.ai:
 1. list_exercises
 2. create_exercise  
 3. save_workout_plan
 4. load_workout_plan
 5. save_personal_record
 6. load_personal_records
+7. generate_workout_guidance
 
 The server provides secure data storage and retrieval with user isolation.
 """
@@ -46,7 +47,7 @@ def get_user_from_context(context) -> str:
     """
     # In production: validate Bearer token and extract user_id from JWT
     # For development: use default user or extract from request context
-    if hasattr(context, 'user_id'):
+    if context and hasattr(context, 'user_id'):
         return context.user_id
     
     # Development fallback - in production this should validate OAuth tokens
@@ -146,7 +147,7 @@ async def handle_list_tools() -> List[Tool]:
         ),
         Tool(
             name="save_workout_plan",
-            description="Store workout plans for users (enforces 3-plan maximum)",
+            description="Store workout plans for users (unlimited plans allowed, with lifecycle management for Claude's 3-plan sets)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -173,6 +174,10 @@ async def handle_list_tools() -> List[Tool]:
                     "notes": {
                         "type": "string",
                         "description": "Optional notes about the workout plan"
+                    },
+                    "create_as_set": {
+                        "type": "boolean",
+                        "description": "Set to true when creating the FIRST plan of a 3-plan set. This will deactivate all existing active plans to maintain clean lifecycle."
                     }
                 },
                 "required": ["plan_name", "exercises_list"]
@@ -244,12 +249,36 @@ async def handle_list_tools() -> List[Tool]:
                     }
                 }
             }
+        ),
+        Tool(
+            name="generate_workout_guidance",
+            description="**USE THIS FIRST** when users ask for workout planning help. Provides detailed guidance for creating new complementary 3-plan workout sets with available exercises and rotation recommendations",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_id": {
+                        "type": "string",
+                        "description": "User ID for generating personalized guidance"
+                    },
+                    "equipment_available": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of available equipment to filter exercises (optional)"
+                    },
+                    "muscle_focus": {
+                        "type": "array", 
+                        "items": {"type": "string"},
+                        "description": "List of muscle groups to focus on (optional)"
+                    }
+                },
+                "required": ["user_id"]
+            }
         )
     ]
 
 
 @server.call_tool()
-async def handle_call_tool(name: str, arguments: Dict[str, Any], context) -> List[TextContent]:
+async def handle_call_tool(name: str, arguments: Dict[str, Any], context=None) -> List[TextContent]:
     """Handle tool calls from Claude."""
     try:
         # Get user ID from context and ensure user exists
@@ -268,6 +297,8 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any], context) -> Lis
             return await handle_save_personal_record(arguments, user_id)
         elif name == "load_personal_records":
             return await handle_load_personal_records(arguments, user_id)
+        elif name == "generate_workout_guidance":
+            return await handle_generate_workout_guidance(arguments, user_id)
         else:
             error_msg = f"Unknown tool: {name}"
             logger.error(error_msg)
@@ -338,6 +369,7 @@ async def handle_save_workout_plan(arguments: Dict[str, Any], user_id: str) -> L
     plan_name = arguments["plan_name"]
     exercises_list = arguments["exercises_list"]
     notes = arguments.get("notes")
+    create_as_set = arguments.get("create_as_set", False)
     
     # Validate exercises exist
     for exercise_data in exercises_list:
@@ -349,14 +381,19 @@ async def handle_save_workout_plan(arguments: Dict[str, Any], user_id: str) -> L
         user_id=user_id,
         plan_name=plan_name,
         exercises_list=exercises_list,
-        notes=notes
+        notes=notes,
+        create_as_set=create_as_set
     )
+    
+    message = f"Workout plan '{plan_name}' saved successfully"
+    if create_as_set:
+        message += " (Previous active plans deactivated for new plan set)"
     
     return [TextContent(
         type="text",
         text=json.dumps({
             "success": True,
-            "message": f"Workout plan '{plan_name}' saved successfully",
+            "message": message,
             "plan_id": plan.plan_id,
             "plan": plan.to_dict()
         })
@@ -463,6 +500,160 @@ async def handle_load_personal_records(arguments: Dict[str, Any], user_id: str) 
     )]
 
 
+async def handle_generate_workout_guidance(arguments: Dict[str, Any], user_id: str) -> List[TextContent]:
+    """Handle generate_workout_guidance tool call."""
+    # Extract arguments
+    request_user_id = arguments["user_id"]
+    equipment_available = arguments.get("equipment_available", [])
+    muscle_focus = arguments.get("muscle_focus", [])
+    
+    # Validate that the requesting user matches the authenticated user
+    if request_user_id != user_id:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "success": False,
+                "error": "Access denied: Cannot generate guidance for different user",
+                "message": "User can only generate guidance for their own account"
+            })
+        )]
+    
+    # Get user information for cycle data
+    user = db.get_user(user_id)
+    if not user:
+        return [TextContent(
+            type="text",
+            text=json.dumps({
+                "success": False,
+                "error": "User not found",
+                "message": f"User {user_id} not found in database"
+            })
+        )]
+    
+    # Get available exercises with filtering
+    exercises = []
+    
+    if equipment_available:
+        # Get union of exercises that work with ANY of the specified equipment
+        equipment_exercise_ids = set()
+        for equipment in equipment_available:
+            filtered_exercises = db.list_exercises(equipment=equipment)
+            equipment_exercise_ids.update(ex.exercise_id for ex in filtered_exercises)
+        
+        # Get all exercises that match any of the equipment
+        all_exercises = db.list_exercises()
+        exercises = [ex for ex in all_exercises if ex.exercise_id in equipment_exercise_ids]
+    else:
+        exercises = db.list_exercises()
+    
+    # Further filter by muscle focus if specified
+    if muscle_focus and exercises:
+        # Get union of exercises that target ANY of the specified muscle groups
+        muscle_exercise_ids = set()
+        for muscle_group in muscle_focus:
+            muscle_exercises = db.list_exercises(muscle_group=muscle_group)
+            muscle_exercise_ids.update(ex.exercise_id for ex in muscle_exercises)
+        
+        # Keep only exercises that match both equipment and muscle criteria
+        equipment_exercise_ids = {ex.exercise_id for ex in exercises}
+        final_exercise_ids = equipment_exercise_ids.intersection(muscle_exercise_ids)
+        exercises = [ex for ex in exercises if ex.exercise_id in final_exercise_ids]
+    
+    # Get current active plan count
+    active_plan_count = db.get_active_plan_count(user_id)
+    
+    # Check rotation status
+    needs_rotation = False
+    days_until_rotation = None
+    if user.last_rotation_date:
+        from datetime import timedelta
+        rotation_interval = timedelta(weeks=user.rotation_weeks)
+        next_rotation_date = user.last_rotation_date + rotation_interval
+        days_until_rotation = (next_rotation_date - datetime.now()).days
+        needs_rotation = days_until_rotation <= 0
+    
+    # Generate complementary plan suggestions
+    plan_suggestions = [
+        {
+            "name": "Push Day",
+            "focus": "Chest, Shoulders, Triceps",
+            "description": "Focus on pushing movements - bench press, shoulder press, tricep exercises"
+        },
+        {
+            "name": "Pull Day", 
+            "focus": "Back, Biceps",
+            "description": "Focus on pulling movements - rows, pulldowns, bicep exercises"
+        },
+        {
+            "name": "Legs Day",
+            "focus": "Quadriceps, Hamstrings, Glutes, Calves",
+            "description": "Focus on lower body - squats, deadlifts, leg exercises"
+        }
+    ]
+    
+    # Alternative split suggestions
+    alternative_splits = [
+        {
+            "type": "Upper/Lower/Full",
+            "plans": [
+                {"name": "Upper Body", "focus": "Chest, Back, Shoulders, Arms"},
+                {"name": "Lower Body", "focus": "Legs, Glutes"}, 
+                {"name": "Full Body", "focus": "Total body compound movements"}
+            ]
+        },
+        {
+            "type": "Strength/Hypertrophy/Conditioning",
+            "plans": [
+                {"name": "Strength", "focus": "Heavy compound movements, low reps"},
+                {"name": "Hypertrophy", "focus": "Muscle building, moderate reps"},
+                {"name": "Conditioning", "focus": "Cardio and endurance exercises"}
+            ]
+        }
+    ]
+    
+    # Convert exercises to simple format for guidance
+    exercise_list = [ex.to_dict() for ex in exercises]
+    
+    return [TextContent(
+        type="text",
+        text=json.dumps({
+            "success": True,
+            "guidance": {
+                "instruction": "Create 3 complementary workout plans using ONLY the exercises provided below. This ensures consistency and proper progression tracking.",
+                "plan_status": f"You currently have {active_plan_count} active plans. There is no maximum limit - you can create as many plans as needed.",
+                "lifecycle_management": "When creating a 3-plan set, use create_as_set=true for the FIRST plan only. This will deactivate previous active plans and start a fresh rotation cycle.",
+                "recommended_splits": plan_suggestions,
+                "alternative_splits": alternative_splits,
+                "available_exercises": {
+                    "count": len(exercise_list),
+                    "exercises": exercise_list,
+                    "filtered_by": {
+                        "equipment": equipment_available if equipment_available else None,
+                        "muscle_focus": muscle_focus if muscle_focus else None
+                    }
+                },
+                "user_cycle_info": {
+                    "current_cycle": user.current_cycle_number,
+                    "rotation_weeks": user.rotation_weeks,
+                    "last_rotation": user.last_rotation_date.isoformat() if user.last_rotation_date else None,
+                    "needs_rotation": needs_rotation,
+                    "days_until_rotation": days_until_rotation
+                },
+                "usage_instructions": [
+                    "1. Choose one of the recommended split types (Push/Pull/Legs is most popular)",
+                    "2. Draft exactly 3 plans using the provided exercises",
+                    "3. Ensure each plan targets different muscle groups for proper recovery",
+                    "4. **IMPORTANT**: Present all 3 plans to user and get explicit approval before saving ANY plans",
+                    "5. **DO NOT SAVE** until user says they're happy with all 3 plans",
+                    "6. For the FIRST plan: Use save_workout_plan with create_as_set=true",
+                    "7. For the 2nd and 3rd plans: Use save_workout_plan with create_as_set=false (or omit)",
+                    "8. All exercises must come from the 'available_exercises' list above"
+                ]
+            }
+        })
+    )]
+
+
 @server.list_resources()
 async def handle_list_resources() -> List[Resource]:
     """List available resources (none for this implementation)."""
@@ -534,7 +725,7 @@ async def main():
         logger.info("AmaCoach MCP Server starting up...")
         logger.info(f"Database path: {config.database_path}")
         logger.info(f"Debug mode: {config.debug_mode}")
-        logger.info(f"Max active plans: {config.max_active_plans}")
+        logger.info("Plan limits: Unlimited active plans with Claude 3-plan set lifecycle management")
         
         # Check if running on Railway (has PORT env var)
         if os.getenv('PORT') or os.getenv('RAILWAY_ENVIRONMENT'):

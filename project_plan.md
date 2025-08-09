@@ -17,7 +17,7 @@ The MCP server is purely a data layer. All workout logic, equipment adaptation, 
 
 ## Required MCP Tools
 
-The MCP server must expose exactly these 6 tools to Claude:
+The MCP server must expose exactly these 7 tools to Claude:
 
 ### 1. `list_exercises`
 - **Purpose**: Return available exercises for Claude to choose from
@@ -50,6 +50,15 @@ The MCP server must expose exactly these 6 tools to Claude:
 - **Purpose**: Retrieve user personal records
 - **Parameters**: user_id, exercise_name (optional), record_type (optional)
 - **Returns**: List of personal records with dates and values
+
+### 7. `generate_workout_guidance`
+- **Purpose**: Provide Claude with guidance for creating complementary 3-plan sets
+- **Parameters**: user_id, equipment_available (optional), muscle_focus (optional)
+- **Returns**: Structured guidance including:
+  - Instruction to create 3 complementary plans (e.g., Push/Pull/Legs or Upper/Lower/Full)
+  - Available exercises from database (filtered by equipment if specified)
+  - Recommendation to use only these exercises across all 3 plans
+  - Current cycle information and rotation status
 
 ## User Authentication & Data Security
 
@@ -148,7 +157,7 @@ The MCP server must expose exactly these 6 tools to Claude:
 ## 3-Plan Rotation System
 
 ### Core Requirements
-1. **Exactly 3 Plans**: Each user maintains exactly 3 active workout plans at any time
+1. **Complementary 3-Plan Set**: Claude creates 3 workout plans designed to work together throughout the week (e.g., Plan A: Push, Plan B: Pull, Plan C: Legs)
 2. **Weekly Rotation**: Plans are designed for weekly rotation (Plan A Monday, Plan B Wednesday, Plan C Friday)
 3. **Cycle Management**: After X weeks (configurable per user, default 6), user rotates to 3 completely new plans
 4. **Automatic Lifecycle**: Old plans are automatically deactivated when new cycle begins
@@ -161,8 +170,8 @@ The MCP server must expose exactly these 6 tools to Claude:
 - `last_rotation_date` is updated
 
 ### Implementation Rules
-- `save_workout_plan` checks if user already has 3 active plans
-- If at limit, either replace existing plan or reject (based on parameters)
+- `save_workout_plan` saves individual plans without hard constraint
+- When Claude creates 3 new complementary plans, old plans are marked inactive
 - `load_workout_plan` only returns active plans by default
 - Rotation triggered by time-based logic or manual user request
 

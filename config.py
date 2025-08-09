@@ -82,9 +82,8 @@ class Config:
             if not self.jwt_secret_key or self.jwt_secret_key == 'your_jwt_secret_key_here':
                 errors.append("JWT_SECRET_KEY is required in production")
         
-        # Validate numerical ranges
-        if self.max_active_plans < 1 or self.max_active_plans > 10:
-            errors.append("MAX_ACTIVE_PLANS must be between 1 and 10")
+        # Note: MAX_ACTIVE_PLANS is now informational only - no hard limits enforced
+        # Validate numerical ranges for other settings
         
         if self.default_rotation_weeks < 1 or self.default_rotation_weeks > 52:
             errors.append("DEFAULT_ROTATION_WEEKS must be between 1 and 52")
@@ -223,7 +222,7 @@ AUDIT_LOG_ENABLED=true
 
 # Workout Configuration
 DEFAULT_ROTATION_WEEKS=6
-MAX_ACTIVE_PLANS=3
+MAX_ACTIVE_PLANS=unlimited
 MAX_EXERCISES_PER_PLAN=20
 
 # Exercise Configuration
