@@ -9,7 +9,7 @@ import sqlite3
 import os
 import json
 from datetime import datetime
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Iterator
 from contextlib import contextmanager
 
 from models import (
@@ -45,7 +45,7 @@ class Database:
         return conn
 
     @contextmanager
-    def get_cursor(self):
+    def get_cursor(self) -> Iterator[sqlite3.Cursor]:
         """Context manager for database transactions."""
         conn = self.get_connection()
         try:
@@ -58,7 +58,7 @@ class Database:
         finally:
             conn.close()
 
-    def init_schema(self):
+    def init_schema(self) -> None:
         """Initialize database schema with all tables and constraints."""
         with self.get_cursor() as cursor:
             # Create User table
@@ -159,7 +159,7 @@ class Database:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_personal_records_user ON personal_records (user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_personal_records_exercise ON personal_records (user_id, exercise_name)")
 
-    def _validate_user_access(self, cursor, user_id: str, table: str, record_user_id: str = None):
+    def _validate_user_access(self, cursor, user_id: str, table: str, record_user_id: Optional[str] = None) -> None:
         """Validate user can only access their own data."""
         if record_user_id and record_user_id != user_id:
             raise UserPermissionError(f"User {user_id} cannot access data belonging to {record_user_id}")
@@ -172,7 +172,10 @@ class Database:
             cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
             if cursor.fetchone():
                 # User exists, return existing user
-                return self.get_user(user_id)
+                existing_user = self.get_user(user_id)
+                if existing_user is None:
+                    raise DatabaseError(f"User {user_id} exists in database but could not be retrieved")
+                return existing_user
 
             # Create new user
             created_date = datetime.now()
@@ -238,6 +241,8 @@ class Database:
             ))
 
             exercise_id = cursor.lastrowid
+            if exercise_id is None:
+                raise DatabaseError("Failed to create exercise: no row ID returned")
             return Exercise(
                 exercise_id=exercise_id,
                 name=name,
@@ -279,12 +284,20 @@ class Database:
             cursor.execute(query, params)
             exercises = []
             for row in cursor.fetchall():
+                # Deserialize JSON fields with type assertion for lists
+                muscle_groups_data = deserialize_json_field(row['muscle_groups'])
+                equipment_data = deserialize_json_field(row['equipment_needed'])
+                
+                # Ensure they're lists (fallback to empty list if not)
+                muscle_groups = muscle_groups_data if isinstance(muscle_groups_data, list) else []
+                equipment_needed = equipment_data if isinstance(equipment_data, list) else []
+                
                 exercises.append(Exercise(
                     exercise_id=row['exercise_id'],
                     name=row['name'],
                     description=row['description'],
-                    muscle_groups=deserialize_json_field(row['muscle_groups']),
-                    equipment_needed=deserialize_json_field(row['equipment_needed']),
+                    muscle_groups=muscle_groups,
+                    equipment_needed=equipment_needed,
                     difficulty_level=row['difficulty_level'],
                     instructions=row['instructions'],
                     created_date=datetime.fromisoformat(row['created_date']),
@@ -300,12 +313,20 @@ class Database:
             if not row:
                 return None
 
+            # Deserialize JSON fields with type assertion for lists
+            muscle_groups_data = deserialize_json_field(row['muscle_groups'])
+            equipment_data = deserialize_json_field(row['equipment_needed'])
+            
+            # Ensure they're lists (fallback to empty list if not)
+            muscle_groups = muscle_groups_data if isinstance(muscle_groups_data, list) else []
+            equipment_needed = equipment_data if isinstance(equipment_data, list) else []
+            
             return Exercise(
                 exercise_id=row['exercise_id'],
                 name=row['name'],
                 description=row['description'],
-                muscle_groups=deserialize_json_field(row['muscle_groups']),
-                equipment_needed=deserialize_json_field(row['equipment_needed']),
+                muscle_groups=muscle_groups,
+                equipment_needed=equipment_needed,
                 difficulty_level=row['difficulty_level'],
                 instructions=row['instructions'],
                 created_date=datetime.fromisoformat(row['created_date']),
@@ -332,6 +353,8 @@ class Database:
                 """, (user_id, plan_name, user.current_cycle_number, True, created_date.isoformat(), notes))
 
                 plan_id = cursor.lastrowid
+                if plan_id is None:
+                    raise DatabaseError("Failed to create workout plan: no row ID returned")
 
                 # Insert planned exercises
                 for order, exercise_data in enumerate(exercises_list, 1):
@@ -359,7 +382,7 @@ class Database:
                     raise ValueError("User already has 3 active workout plans. Cannot create more.")
                 raise DatabaseError(f"Failed to save workout plan: {str(e)}")
 
-    def load_workout_plan(self, user_id: str, plan_id: Optional[int] = None) -> Union[WorkoutPlan, List[WorkoutPlan]]:
+    def load_workout_plan(self, user_id: str, plan_id: Optional[int] = None) -> Union[Dict[str, Any], List[WorkoutPlan], None]:
         """Load workout plan(s) for user. Returns single plan if plan_id given, else all active plans."""
         with self.get_cursor() as cursor:
             if plan_id:
@@ -461,6 +484,8 @@ class Database:
             """, (user_id, exercise_name, record_type, value, unit, date.isoformat(), notes))
 
             record_id = cursor.lastrowid
+            if record_id is None:
+                raise DatabaseError("Failed to create personal record: no row ID returned")
             return PersonalRecord(
                 record_id=record_id,
                 user_id=user_id,

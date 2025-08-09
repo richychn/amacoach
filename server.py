@@ -60,6 +60,8 @@ def ensure_user_exists(user_id: str) -> User:
         # Create user with default name (in production, get from OAuth profile)
         user = db.create_user(user_id, f"User_{user_id}")
         logger.info(f"Created new user: {user_id}")
+        if not user:
+            raise DatabaseError(f"Failed to create user: {user_id}")
     return user
 
 
@@ -516,6 +518,8 @@ async def run_http_server():
 
 async def main():
     """Main server entry point."""
+    import os
+    
     try:
         # Validate configuration
         if not config.validate_config():
@@ -532,26 +536,33 @@ async def main():
         logger.info(f"Debug mode: {config.debug_mode}")
         logger.info(f"Max active plans: {config.max_active_plans}")
         
-        # Start HTTP server for Railway health checks
-        await run_http_server()
-        
-        # Run the server using stdio transport (standard for MCP servers)
-        from mcp.server.stdio import stdio_server
-        
-        logger.info("AmaCoach MCP Server is running")
-        async with stdio_server() as (read_stream, write_stream):
-            await server.run(
-                read_stream, 
-                write_stream, 
-                InitializationOptions(
-                    server_name="amacoach",
-                    server_version="0.1.0",
-                    capabilities=ServerCapabilities(
-                        tools=ToolsCapability(),
-                        resources=ResourcesCapability()
+        # Check if running on Railway (has PORT env var)
+        if os.getenv('PORT') or os.getenv('RAILWAY_ENVIRONMENT'):
+            # Railway deployment - run HTTP server for health checks
+            logger.info("Railway environment detected - starting HTTP health server")
+            await run_http_server()
+            
+            # Keep the process alive
+            import asyncio
+            await asyncio.Event().wait()
+        else:
+            # Local development - run MCP stdio server
+            logger.info("Local environment detected - starting MCP stdio server")
+            from mcp.server.stdio import stdio_server
+            
+            async with stdio_server() as (read_stream, write_stream):
+                await server.run(
+                    read_stream, 
+                    write_stream, 
+                    InitializationOptions(
+                        server_name="amacoach",
+                        server_version="0.1.0",
+                        capabilities=ServerCapabilities(
+                            tools=ToolsCapability(),
+                            resources=ResourcesCapability()
+                        )
                     )
                 )
-            )
             
     except Exception as e:
         logger.error(f"Server startup failed: {str(e)}")

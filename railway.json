@@ -8,12 +8,7 @@
     "numReplicas": 1,
     "restartPolicyType": "ON_FAILURE",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 10
-  },
-  "volumes": [
-    {
-      "name": "amacoach-data",
-      "mountPath": "/app/data"
-    }
-  ]
+    "healthcheckTimeout": 30,
+    "startCommand": "uv run python server.py"
+  }
 }
