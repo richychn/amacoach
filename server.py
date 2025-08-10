@@ -752,11 +752,20 @@ async def main():
             # Create MCP endpoint that handles the protocol properly
             async def mcp_endpoint(request):
                 """Handle MCP requests over HTTP - supports both POST and GET per MCP Streamable HTTP spec"""
+                # Log all incoming requests for debugging
+                logger.info(f"=== MCP REQUEST DEBUG ===")
+                logger.info(f"Method: {request.method}")
+                logger.info(f"URL: {request.url}")
+                logger.info(f"Headers: {dict(request.headers)}")
+                
                 try:
                     if request.method == "POST":
                         # POST: Handle JSON-RPC messages (main MCP communication)
                         body = await request.body()
                         request_data = json.loads(body)
+                        
+                        logger.info(f"Request Body: {body.decode()}")
+                        logger.info(f"Parsed JSON-RPC: {request_data}")
                         
                         # Add user context for authentication-free access
                         context = type('Context', (), {'user_id': 'claude_user'})()
@@ -765,6 +774,8 @@ async def main():
                         method = request_data.get("method", "")
                         params = request_data.get("params", {})
                         request_id = request_data.get("id")
+                        
+                        logger.info(f"MCP Method: {method}, Params: {params}, ID: {request_id}")
                         
                         if method == "tools/list":
                             tools = await handle_list_tools()
@@ -816,13 +827,23 @@ async def main():
                                 "result": {
                                     "protocolVersion": "2024-11-05",
                                     "capabilities": {
-                                        "tools": {},
-                                        "resources": {}
+                                        "tools": {
+                                            "listChanged": False
+                                        },
+                                        "resources": {
+                                            "subscribe": False,
+                                            "listChanged": False
+                                        },
+                                        "prompts": {
+                                            "listChanged": False
+                                        },
+                                        "logging": {}
                                     },
                                     "serverInfo": {
                                         "name": "amacoach",
                                         "version": "0.1.0"
-                                    }
+                                    },
+                                    "instructions": "I'm an MCP server providing fitness coaching tools. Use generate_workout_guidance first when users ask for workout planning help."
                                 }
                             }
                         else:
@@ -835,6 +856,7 @@ async def main():
                                 }
                             }
                         
+                        logger.info(f"MCP Response: {response}")
                         return JSONResponse(response)
                     
                     elif request.method == "GET":
