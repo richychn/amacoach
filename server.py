@@ -28,13 +28,8 @@ from mcp.server.streamable_http import StreamableHTTPServerTransport
 import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.responses import PlainTextResponse, JSONResponse
-from starlette.routing import Route
-import secrets
-import time
-from jose import jwt
-from jose.exceptions import ExpiredSignatureError, JWTError
-from datetime import datetime, timedelta
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route, Mount
 
 from database import Database, DatabaseError, UserPermissionError
 from models import User
@@ -50,16 +45,7 @@ db = Database(config.database_path)
 # Create MCP server
 server = Server("amacoach")
 
-# OAuth 2.1 configuration
-OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "amacoach-client")
-OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", secrets.token_hex(32))
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", secrets.token_hex(32))
-JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
-
-# In-memory token store (use Redis/database in production)
-oauth_tokens = {}
-refresh_tokens = {}
+# No authentication - freely accessible for Claude.ai Remote MCP
 
 
 def get_user_from_context(context) -> str:
@@ -758,146 +744,98 @@ async def main():
             logger.info("MCP-over-HTTP mode detected - starting MCP HTTP server")
             port = int(os.environ.get("PORT", 8000))
             
-            # OAuth 2.1 helper functions
-            def create_access_token(data: dict, expires_delta: timedelta | None = None):
-                to_encode = data.copy()
-                if expires_delta:
-                    expire = datetime.utcnow() + expires_delta
-                else:
-                    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-                to_encode.update({"exp": expire})
-                return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+            # Use the MCP server's built-in HTTP transport
+            from mcp.server.sse import SseServerTransport
+            from starlette.responses import JSONResponse
+            import json
             
-            def verify_token(token: str):
+            # Create MCP endpoint that handles the protocol properly
+            async def mcp_endpoint(request):
+                """Handle MCP requests over HTTP"""
                 try:
-                    payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-                    return payload
-                except ExpiredSignatureError:
-                    return None
-                except JWTError:
-                    return None
-            
-            # OAuth 2.1 endpoints
-            async def oauth_authorize(request):
-                """OAuth 2.1 authorization endpoint"""
-                # Simplified authorization - in production, show login form
-                client_id = request.query_params.get("client_id")
-                redirect_uri = request.query_params.get("redirect_uri") 
-                state = request.query_params.get("state")
-                
-                if client_id != OAUTH_CLIENT_ID:
-                    return PlainTextResponse("Invalid client_id", status_code=400)
-                
-                # Generate authorization code
-                auth_code = secrets.token_hex(32)
-                oauth_tokens[auth_code] = {
-                    "client_id": client_id,
-                    "redirect_uri": redirect_uri,
-                    "expires": time.time() + 600,  # 10 minutes
-                    "user_id": "claude_user"  # Default user for Claude
-                }
-                
-                # Redirect back with authorization code
-                redirect_url = f"{redirect_uri}?code={auth_code}&state={state}"
-                return JSONResponse({"redirect_url": redirect_url})
-            
-            async def oauth_token(request):
-                """OAuth 2.1 token endpoint"""
-                form = await request.form()
-                grant_type = form.get("grant_type")
-                
-                if grant_type == "authorization_code":
-                    code = form.get("code")
-                    client_id = form.get("client_id")
-                    client_secret = form.get("client_secret")
-                    
-                    # Validate client credentials
-                    if client_id != OAUTH_CLIENT_ID or client_secret != OAUTH_CLIENT_SECRET:
-                        return JSONResponse({"error": "invalid_client"}, status_code=401)
-                    
-                    # Validate authorization code
-                    if code not in oauth_tokens or oauth_tokens[code]["expires"] < time.time():
-                        return JSONResponse({"error": "invalid_grant"}, status_code=400)
-                    
-                    auth_data = oauth_tokens[code]
-                    del oauth_tokens[code]  # Use code only once
-                    
-                    # Create access token
-                    access_token = create_access_token({
-                        "sub": auth_data["user_id"],
-                        "client_id": client_id,
-                        "scope": "mcp"
-                    })
-                    
-                    # Create refresh token
-                    refresh_token = secrets.token_hex(32)
-                    refresh_tokens[refresh_token] = {
-                        "user_id": auth_data["user_id"],
-                        "client_id": client_id,
-                        "expires": time.time() + 86400 * 30  # 30 days
-                    }
-                    
+                    if request.method == "POST":
+                        # Get the request body
+                        body = await request.body()
+                        request_data = json.loads(body)
+                        
+                        # Add user context for authentication-free access
+                        context = type('Context', (), {'user_id': 'claude_user'})()
+                        
+                        # Handle different MCP methods
+                        method = request_data.get("method", "")
+                        params = request_data.get("params", {})
+                        request_id = request_data.get("id")
+                        
+                        if method == "tools/list":
+                            tools = await handle_list_tools()
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "result": {
+                                    "tools": [tool.model_dump() for tool in tools]
+                                }
+                            }
+                        elif method == "tools/call":
+                            tool_name = params.get("name")
+                            arguments = params.get("arguments", {})
+                            result = await handle_call_tool(tool_name, arguments, context)
+                            response = {
+                                "jsonrpc": "2.0", 
+                                "id": request_id,
+                                "result": {
+                                    "content": [content.model_dump() for content in result]
+                                }
+                            }
+                        elif method == "initialize":
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "result": {
+                                    "protocolVersion": "2024-11-05",
+                                    "capabilities": {
+                                        "tools": {},
+                                        "resources": {}
+                                    },
+                                    "serverInfo": {
+                                        "name": "amacoach",
+                                        "version": "0.1.0"
+                                    }
+                                }
+                            }
+                        else:
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "error": {
+                                    "code": -32601,
+                                    "message": f"Method not found: {method}"
+                                }
+                            }
+                        
+                        return JSONResponse(response)
+                    else:
+                        return JSONResponse({"error": "Only POST requests allowed"}, status_code=405)
+                        
+                except Exception as e:
+                    logger.error(f"MCP request failed: {str(e)}")
                     return JSONResponse({
-                        "access_token": access_token,
-                        "token_type": "Bearer",
-                        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-                        "refresh_token": refresh_token,
-                        "scope": "mcp"
-                    })
-                
-                return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+                        "jsonrpc": "2.0",
+                        "id": request_data.get("id") if 'request_data' in locals() else None,
+                        "error": {
+                            "code": -32603,
+                            "message": "Internal error",
+                            "data": str(e)
+                        }
+                    }, status_code=500)
             
-            class MCPEndpoint:
-                """MCP-over-HTTP endpoint with OAuth authentication"""
-                
-                def __init__(self):
-                    self.transport = StreamableHTTPServerTransport(
-                        mcp_session_id=None,
-                        is_json_response_enabled=False
-                    )
-                
-                async def __call__(self, scope, receive, send):
-                    # Extract auth header from scope
-                    auth_header = ""
-                    for header_name, header_value in scope.get("headers", []):
-                        if header_name == b"authorization":
-                            auth_header = header_value.decode("utf-8")
-                            break
-                    
-                    # OAuth 2.1 authentication
-                    if not auth_header.startswith("Bearer "):
-                        response = PlainTextResponse("Missing or invalid authorization header", status_code=401)
-                        await response(scope, receive, send)
-                        return
-                    
-                    token = auth_header[7:]
-                    payload = verify_token(token)
-                    if not payload:
-                        response = PlainTextResponse("Invalid or expired token", status_code=401)
-                        await response(scope, receive, send)
-                        return
-                    
-                    # Add user context to scope
-                    scope["user_id"] = payload.get("sub", "claude_user")
-                    
-                    # Handle MCP request
-                    await self.transport.handle_request(scope, receive, send)
-            
-            mcp_endpoint = MCPEndpoint()
-            
-            from starlette.routing import Mount
-            
-            # Public health endpoint (no auth required)
+            # Public health endpoint
             async def http_health_check(request):
                 logger.info("HTTP health check accessed")
                 return PlainTextResponse("OK", status_code=200)
             
             app = Starlette(routes=[
-                Route("/health", http_health_check, methods=["GET"]),  # Health check first (no auth)
-                Route("/oauth/authorize", oauth_authorize, methods=["GET", "POST"]),
-                Route("/oauth/token", oauth_token, methods=["POST"]),
-                Route("/mcp", mcp_endpoint, methods=["GET", "POST"]),  # MCP endpoint at /mcp
-                Route("/", mcp_endpoint, methods=["GET", "POST"]),  # Root MCP endpoint
+                Route("/health", http_health_check, methods=["GET"]),
+                Route("/", mcp_endpoint, methods=["POST"]),  # MCP requests
             ])
             
             # Start uvicorn server
