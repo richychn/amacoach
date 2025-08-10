@@ -937,24 +937,91 @@ async def main():
                 logger.info("HTTP health check accessed")
                 return PlainTextResponse("OK", status_code=200)
             
+            # OAuth Discovery endpoint (required by Claude.ai)
+            async def oauth_discovery(request):
+                """OAuth 2.0 Authorization Server Metadata for public access"""
+                base_url = str(request.base_url).rstrip('/')
+                discovery_response = {
+                    "issuer": base_url,
+                    "authorization_endpoint": f"{base_url}/oauth/authorize",
+                    "token_endpoint": f"{base_url}/oauth/token",
+                    "registration_endpoint": f"{base_url}/register",
+                    "scopes_supported": ["mcp:tools", "mcp:resources"],
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code", "client_credentials"],
+                    "token_endpoint_auth_methods_supported": ["none", "client_secret_basic"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "authorization_response_iss_parameter_supported": True
+                }
+                logger.info("OAuth discovery endpoint called - returning public access metadata")
+                return JSONResponse(discovery_response)
+
+            # OAuth Authorization endpoint
+            async def oauth_authorize(request):
+                """Handle OAuth authorization requests - always approve for public access"""
+                try:
+                    # Extract query parameters
+                    client_id = request.query_params.get("client_id")
+                    redirect_uri = request.query_params.get("redirect_uri") 
+                    state = request.query_params.get("state")
+                    scope = request.query_params.get("scope")
+                    
+                    logger.info(f"OAuth authorize request: client_id={client_id}, redirect_uri={redirect_uri}")
+                    
+                    # For public access, always approve and redirect back with auth code
+                    auth_code = "public-access-granted"
+                    callback_url = f"{redirect_uri}?code={auth_code}&state={state}"
+                    
+                    from starlette.responses import RedirectResponse
+                    return RedirectResponse(url=callback_url)
+                    
+                except Exception as e:
+                    logger.error(f"OAuth authorize failed: {str(e)}")
+                    return JSONResponse({
+                        "error": "server_error",
+                        "error_description": "Authorization failed"
+                    }, status_code=500)
+
+            # OAuth Token endpoint  
+            async def oauth_token(request):
+                """Handle OAuth token requests - return public access token"""
+                try:
+                    # For public access, return a simple access token
+                    token_response = {
+                        "access_token": "public-access-token",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                        "scope": "mcp:tools mcp:resources"
+                    }
+                    
+                    logger.info("OAuth token request - returning public access token")
+                    return JSONResponse(token_response)
+                    
+                except Exception as e:
+                    logger.error(f"OAuth token failed: {str(e)}")
+                    return JSONResponse({
+                        "error": "server_error", 
+                        "error_description": "Token generation failed"
+                    }, status_code=500)
+
             # Dynamic Client Registration endpoint for Claude.ai Remote MCP
             async def register_client(request):
                 """Handle RFC 7591 Dynamic Client Registration for Claude.ai"""
                 try:
-                    # For authentication-free access, return a simple client registration
-                    # In production, this would validate the request and create actual client credentials
+                    base_url = str(request.base_url).rstrip('/')
                     registration_response = {
                         "client_id": "amacoach-claude-client",
-                        "client_secret": "not-required-for-free-access",
+                        "client_secret": "public-access-no-secret-required",
                         "client_id_issued_at": int(datetime.now().timestamp()),
                         "client_name": "Claude.ai MCP Client",
-                        "token_endpoint_auth_method": "none",  # No authentication required
-                        "grant_types": ["client_credentials"],
-                        "response_types": ["token"],
+                        "token_endpoint_auth_method": "none",
+                        "grant_types": ["authorization_code", "client_credentials"],
+                        "response_types": ["code"],
+                        "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
                         "scope": "mcp:tools mcp:resources"
                     }
                     
-                    logger.info("Client registration request received - returning free access credentials")
+                    logger.info("Client registration request received - returning public access credentials")
                     return JSONResponse(registration_response)
                     
                 except Exception as e:
@@ -966,6 +1033,9 @@ async def main():
             
             app = Starlette(routes=[
                 Route("/health", http_health_check, methods=["GET"]),
+                Route("/.well-known/oauth-authorization-server", oauth_discovery, methods=["GET"]),  # OAuth Discovery
+                Route("/oauth/authorize", oauth_authorize, methods=["GET"]),  # OAuth Authorization
+                Route("/oauth/token", oauth_token, methods=["POST"]),  # OAuth Token
                 Route("/register", register_client, methods=["POST"]),  # RFC 7591 DCR
                 Route("/", mcp_endpoint, methods=["GET", "POST", "DELETE"]),  # MCP Streamable HTTP
             ])
