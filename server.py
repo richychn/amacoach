@@ -24,12 +24,17 @@ from mcp.server.models import InitializationOptions
 from mcp.types import ServerCapabilities, ToolsCapability, ResourcesCapability
 from mcp.types import Resource, Tool, TextContent
 from pydantic import AnyUrl
-from fastapi import FastAPI, Request, HTTPException, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse
-from pydantic import BaseModel
+from mcp.server.streamable_http import StreamableHTTPServerTransport
 import uvicorn
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.responses import PlainTextResponse, JSONResponse
+from starlette.routing import Route
+import secrets
+import time
+from jose import jwt
+from jose.exceptions import ExpiredSignatureError, JWTError
+from datetime import datetime, timedelta
 
 from database import Database, DatabaseError, UserPermissionError
 from models import User
@@ -45,28 +50,16 @@ db = Database(config.database_path)
 # Create MCP server
 server = Server("amacoach")
 
-# HTTP API models
-class CallToolRequest(BaseModel):
-    name: str
-    arguments: dict = {}
+# OAuth 2.1 configuration
+OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "amacoach-client")
+OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", secrets.token_hex(32))
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", secrets.token_hex(32))
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-class CallToolResponse(BaseModel):
-    content: list
-    isError: bool = False
-
-# Authentication for HTTP API
-security = HTTPBearer(auto_error=False)
-
-async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify bearer token if MCP_AUTH_TOKEN is set"""
-    required_token = os.environ.get("MCP_AUTH_TOKEN")
-    if required_token:
-        if not credentials or credentials.credentials != required_token:
-            raise HTTPException(status_code=401, detail="Invalid or missing token")
-    return credentials
-
-# Create FastAPI app for HTTP mode
-http_app = FastAPI(title="AmaCoach HTTP API", version="0.1.0")
+# In-memory token store (use Redis/database in production)
+oauth_tokens = {}
+refresh_tokens = {}
 
 
 def get_user_from_context(context) -> str:
@@ -684,56 +677,6 @@ async def handle_generate_workout_guidance(arguments: Dict[str, Any], user_id: s
     )]
 
 
-# HTTP API endpoints
-@http_app.get("/tools")
-async def http_list_tools(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
-    """List available MCP tools via HTTP"""
-    tools = await handle_list_tools()
-    return {"tools": [{"name": tool.name, "description": tool.description, "inputSchema": tool.inputSchema} for tool in tools]}
-
-@http_app.post("/call-tool", response_model=CallToolResponse)
-async def http_call_tool(request: CallToolRequest, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
-    """Execute an MCP tool via HTTP"""
-    try:
-        # Extract user_id for HTTP requests
-        # In a real implementation, you'd extract user info from the JWT token
-        user_id = "http_user"  # Default user for HTTP API
-        
-        # Route to appropriate MCP tool handler
-        if request.name == "list_exercises":
-            result = await handle_list_exercises(request.arguments, user_id)
-        elif request.name == "create_exercise":
-            result = await handle_create_exercise(request.arguments, user_id)
-        elif request.name == "save_workout_plan":
-            result = await handle_save_workout_plan(request.arguments, user_id)
-        elif request.name == "load_workout_plan":
-            result = await handle_load_workout_plan(request.arguments, user_id)
-        elif request.name == "save_personal_record":
-            result = await handle_save_personal_record(request.arguments, user_id)
-        elif request.name == "load_personal_records":
-            result = await handle_load_personal_records(request.arguments, user_id)
-        elif request.name == "generate_workout_guidance":
-            result = await handle_generate_workout_guidance(request.arguments, user_id)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown tool: {request.name}")
-            
-        # Convert MCP result to HTTP response format
-        # MCP handlers return List[TextContent] directly
-        if isinstance(result, list):
-            content = result
-        else:
-            # Fallback for unexpected result types
-            content = [{"type": "text", "text": str(result)}]
-            
-        return CallToolResponse(content=content, isError=False)
-    except Exception as e:
-        logger.error(f"Error calling tool {request.name}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@http_app.get("/health")
-async def http_health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "server": "amacoach-http-api"}
 
 
 @server.list_resources()
@@ -809,16 +752,152 @@ async def main():
         logger.info(f"Debug mode: {config.debug_mode}")
         logger.info("Plan limits: Unlimited active plans with Claude 3-plan set lifecycle management")
         
-        # Check if HTTP_MODE environment variable is set for API mode
+        # Check if HTTP_MODE environment variable is set for MCP-over-HTTP
         if os.getenv('HTTP_MODE') == 'true' or os.getenv('PORT'):
-            # HTTP API mode - serve HTTP endpoints for ChatGPT/external integrations
-            logger.info("HTTP mode detected - starting HTTP API server")
+            # MCP-over-HTTP mode - serve MCP protocol for Claude.ai Remote MCP
+            logger.info("MCP-over-HTTP mode detected - starting MCP HTTP server")
             port = int(os.environ.get("PORT", 8000))
             
-            # Start FastAPI server with uvicorn
+            # OAuth 2.1 helper functions
+            def create_access_token(data: dict, expires_delta: timedelta | None = None):
+                to_encode = data.copy()
+                if expires_delta:
+                    expire = datetime.utcnow() + expires_delta
+                else:
+                    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+                to_encode.update({"exp": expire})
+                return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+            
+            def verify_token(token: str):
+                try:
+                    payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+                    return payload
+                except ExpiredSignatureError:
+                    return None
+                except JWTError:
+                    return None
+            
+            # OAuth 2.1 endpoints
+            async def oauth_authorize(request):
+                """OAuth 2.1 authorization endpoint"""
+                # Simplified authorization - in production, show login form
+                client_id = request.query_params.get("client_id")
+                redirect_uri = request.query_params.get("redirect_uri") 
+                state = request.query_params.get("state")
+                
+                if client_id != OAUTH_CLIENT_ID:
+                    return PlainTextResponse("Invalid client_id", status_code=400)
+                
+                # Generate authorization code
+                auth_code = secrets.token_hex(32)
+                oauth_tokens[auth_code] = {
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "expires": time.time() + 600,  # 10 minutes
+                    "user_id": "claude_user"  # Default user for Claude
+                }
+                
+                # Redirect back with authorization code
+                redirect_url = f"{redirect_uri}?code={auth_code}&state={state}"
+                return JSONResponse({"redirect_url": redirect_url})
+            
+            async def oauth_token(request):
+                """OAuth 2.1 token endpoint"""
+                form = await request.form()
+                grant_type = form.get("grant_type")
+                
+                if grant_type == "authorization_code":
+                    code = form.get("code")
+                    client_id = form.get("client_id")
+                    client_secret = form.get("client_secret")
+                    
+                    # Validate client credentials
+                    if client_id != OAUTH_CLIENT_ID or client_secret != OAUTH_CLIENT_SECRET:
+                        return JSONResponse({"error": "invalid_client"}, status_code=401)
+                    
+                    # Validate authorization code
+                    if code not in oauth_tokens or oauth_tokens[code]["expires"] < time.time():
+                        return JSONResponse({"error": "invalid_grant"}, status_code=400)
+                    
+                    auth_data = oauth_tokens[code]
+                    del oauth_tokens[code]  # Use code only once
+                    
+                    # Create access token
+                    access_token = create_access_token({
+                        "sub": auth_data["user_id"],
+                        "client_id": client_id,
+                        "scope": "mcp"
+                    })
+                    
+                    # Create refresh token
+                    refresh_token = secrets.token_hex(32)
+                    refresh_tokens[refresh_token] = {
+                        "user_id": auth_data["user_id"],
+                        "client_id": client_id,
+                        "expires": time.time() + 86400 * 30  # 30 days
+                    }
+                    
+                    return JSONResponse({
+                        "access_token": access_token,
+                        "token_type": "Bearer",
+                        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                        "refresh_token": refresh_token,
+                        "scope": "mcp"
+                    })
+                
+                return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+            
+            class MCPEndpoint:
+                """MCP-over-HTTP endpoint with OAuth authentication"""
+                
+                def __init__(self):
+                    self.transport = StreamableHTTPServerTransport(
+                        mcp_session_id=None,
+                        is_json_response_enabled=False
+                    )
+                
+                async def __call__(self, scope, receive, send):
+                    # Extract auth header from scope
+                    auth_header = ""
+                    for header_name, header_value in scope.get("headers", []):
+                        if header_name == b"authorization":
+                            auth_header = header_value.decode("utf-8")
+                            break
+                    
+                    # OAuth 2.1 authentication
+                    if not auth_header.startswith("Bearer "):
+                        response = PlainTextResponse("Missing or invalid authorization header", status_code=401)
+                        await response(scope, receive, send)
+                        return
+                    
+                    token = auth_header[7:]
+                    payload = verify_token(token)
+                    if not payload:
+                        response = PlainTextResponse("Invalid or expired token", status_code=401)
+                        await response(scope, receive, send)
+                        return
+                    
+                    # Add user context to scope
+                    scope["user_id"] = payload.get("sub", "claude_user")
+                    
+                    # Handle MCP request
+                    await self.transport.handle_request(scope, receive, send)
+            
+            mcp_endpoint = MCPEndpoint()
+            
+            from starlette.routing import Mount
+            
+            app = Starlette(routes=[
+                Route("/oauth/authorize", oauth_authorize, methods=["GET", "POST"]),
+                Route("/oauth/token", oauth_token, methods=["POST"]),
+                Mount("/", app=mcp_endpoint),
+                Route("/health", lambda request: PlainTextResponse("OK"), methods=["GET"]),
+            ])
+            
+            # Start uvicorn server
             uvicorn_config = uvicorn.Config(
-                http_app, 
-                host="0.0.0.0", 
+                app,
+                host="0.0.0.0",
                 port=port,
                 log_level="info"
             )

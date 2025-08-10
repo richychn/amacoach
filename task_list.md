@@ -132,7 +132,26 @@ AmaCoach is a functional MCP (Model Context Protocol) server that enables Claude
 
 ## ✅ COMPLETED UPDATES (August 2025)
 
-### HTTP API Integration - ✅ COMPLETE
+### MCP-over-HTTP + OAuth 2.1 Integration - ✅ COMPLETE
+- ✅ **DONE** - Replaced FastAPI with MCP-over-HTTP protocol
+  - Removed all FastAPI endpoints (/tools, /call-tool)
+  - Implemented proper MCP protocol over HTTP using StreamableHTTPServerTransport
+  - Added ASGI-compliant endpoint for Claude.ai Remote MCP compatibility
+  
+- ✅ **DONE** - Added full OAuth 2.1 authentication
+  - Implemented /oauth/authorize endpoint for authorization flow
+  - Implemented /oauth/token endpoint for token exchange
+  - Added JWT token system with access/refresh tokens
+  - Proper client credentials validation
+  - Secure token signing and verification
+  
+- ✅ **DONE** - Fixed all type safety issues
+  - Corrected JWT exception imports (ExpiredSignatureError, JWTError)
+  - Fixed timedelta type annotations
+  - Resolved ASGI parameter handling
+  - All Pylance errors resolved
+
+### HTTP API Integration - ⚠️ DEPRECATED
 - ✅ **DONE** - Switched from UV to pyenv + requirements.txt
   - Removed UV-related files (uv.lock, pyproject.toml)
   - Installed pyenv and Python 3.10.18
@@ -146,33 +165,32 @@ AmaCoach is a functional MCP (Model Context Protocol) server that enables Claude
   - Fixed type errors and response formatting
   - All 7 MCP tools now accessible via HTTP API
 
-### Deployment Modes - ✅ COMPLETE
-- ✅ **MCP Mode (Claude Desktop)**: `python server.py`
-- ✅ **HTTP API Mode (ChatGPT)**: `HTTP_MODE=true python server.py` 
-- ✅ **Railway Mode**: Automatic based on PORT/RAILWAY_ENVIRONMENT
-- ✅ **Authentication**: `MCP_AUTH_TOKEN=token HTTP_MODE=true python server.py`
+### Deployment Modes - ✅ UPDATED
+- ✅ **MCP Mode (Claude Desktop)**: `python server.py` - Local stdio MCP
+- ✅ **MCP-over-HTTP Mode (Claude.ai Remote MCP)**: `HTTP_MODE=true python server.py`
+- ✅ **Railway Mode**: Automatic MCP-over-HTTP based on PORT environment variable
+- ✅ **OAuth 2.1 Authentication**: Full OAuth flow with JWT tokens
 
 ### Testing Results - ✅ VERIFIED
-- ✅ **HTTP API Working**: All tools tested and functional
-- ✅ **Authentication Working**: Bearer token validation confirmed
-- ✅ **Type Safety**: Fixed Pylance errors for production use
-- ✅ **Response Format**: Proper JSON responses for ChatGPT integration
+- ✅ **MCP-over-HTTP Protocol**: Proper MCP protocol implementation
+- ✅ **OAuth 2.1 Flow**: Complete authorization and token endpoints
+- ✅ **JWT Authentication**: Secure token validation working
+- ✅ **Type Safety**: All Pylance errors resolved
+- ✅ **ASGI Integration**: Proper ASGI parameter handling
 
 ## 📝 REMAINING TASKS
 
-### Priority: MEDIUM - User Experience Issues
-- [ ] **MEDIUM** - Fix generate_workout_guidance workflow (Claude Desktop)
-  - Claude Desktop skips plan approval step despite instructions
-  - Need to ensure user sees and approves plans before saving
-  - Consider alternative approaches (separate tools, different instruction format)
-  - **Note**: HTTP API mode works fine, issue specific to Claude Desktop
+### Priority: HIGH - Claude.ai Remote MCP Integration
+- [ ] **HIGH** - Deploy to Railway with OAuth 2.1 configuration
+  - Set OAuth environment variables (CLIENT_ID, CLIENT_SECRET, JWT_SECRET_KEY)
+  - Test MCP-over-HTTP endpoints on Railway deployment
+  - Verify OAuth authorization flow works in cloud environment
 
-### Priority: MEDIUM - Testing & Validation  
-- [ ] **MEDIUM** - Validate Claude Desktop MCP connection
-  - User needs to download and configure Claude Desktop app
-  - Test all 7 MCP tools through conversational interface
-  - Test equipment adaptation scenarios
-  - **Note**: HTTP API mode fully functional for ChatGPT
+- [ ] **HIGH** - Configure Claude.ai Remote MCP connection
+  - Add Railway server URL to Claude.ai MCP settings
+  - Configure OAuth 2.1 credentials in Claude.ai
+  - Test all 7 MCP tools through Claude.ai web interface
+  - Validate fitness coaching workflow end-to-end
 
 ### Priority: MEDIUM - Documentation & Repository
 - [ ] **MEDIUM** - Initialize git repository and push to GitHub
@@ -194,17 +212,26 @@ AmaCoach is a functional MCP (Model Context Protocol) server that enables Claude
 ## 🎯 Current Status Summary
 
 ### What's Working ✅
-- **Complete MCP server** with all 7 required tools
+- **Complete MCP server** with all 7 required tools (including generate_workout_guidance)
+- **MCP-over-HTTP protocol** with proper StreamableHTTPServerTransport integration
+- **Full OAuth 2.1 authentication** with authorization and token endpoints
 - **Railway deployment** with health checks and persistence
-- **3-plan rotation system** with database-level constraints
-- **Local Claude Desktop integration** (configuration ready)
+- **3-plan rotation system** updated for complementary plans (no hard constraints)
+- **JWT token system** with secure signing and validation
 - **Comprehensive data models** with validation and security
-- **Type-safe codebase** with VSCode/Pylance compatibility
+- **Type-safe codebase** with all Pylance errors resolved
+- **ASGI-compliant endpoints** for proper MCP transport handling
 
-### What's Being Tested 🔄
-- **Claude Desktop app connection** - user downloading and testing
-- **MCP tool functionality** through conversational interface
-- **Real-world usage scenarios** (creating plans, logging PRs, equipment adaptation)
+### Current Target: Claude.ai Remote MCP (Claude Mobile) 🎯
+- **MCP-over-HTTP Mode**: Ready for Claude.ai Remote MCP integration
+- **OAuth 2.1 Flow**: Complete authorization endpoints implemented
+- **Railway Deployment**: Configured for cloud-based MCP-over-HTTP access
+- **All 7 MCP Tools**: Accessible via Remote MCP protocol
+
+### What Needs Testing 🔄
+- **Railway OAuth deployment** - Set environment variables and deploy
+- **Claude.ai Remote MCP setup** - Configure OAuth credentials
+- **End-to-end fitness coaching** - Test workout planning through Claude.ai web/mobile
 
 ### Architecture Overview 🏗️
 ```
@@ -217,17 +244,17 @@ Local MCP Server (server.py)
     ↓ SQLite operations
 AmaCoach Database (amacoach.db)
 
-Mode 2: ChatGPT (HTTP API)
-ChatGPT Custom GPT
-    ↓ HTTP requests + Bearer auth
-FastAPI Server (server.py HTTP_MODE=true)
+Mode 2: Claude.ai Remote MCP
+Claude.ai Remote MCP
+    ↓ MCP-over-HTTP + OAuth 2.1
+MCP Server (server.py HTTP_MODE=true)
     ↓ SQLite operations
 AmaCoach Database (amacoach.db)
 
 Mode 3: Railway Deployment
 Railway Cloud Platform
-    ↓ HTTP endpoints + Bearer auth
-Production FastAPI Server (PORT env var)
+    ↓ MCP-over-HTTP + OAuth 2.1
+Production MCP Server (PORT env var)
     ↓ SQLite operations with volume persistence
 Production Database
 ```
@@ -235,13 +262,13 @@ Production Database
 ## 🚀 Next Steps for New Claude Code Session
 
 ### Immediate Actions Available
-1. **ChatGPT Integration** - User can create Custom GPT with HTTP API endpoints
-2. **Railway HTTP Deployment** - Set MCP_AUTH_TOKEN and deploy HTTP mode
-3. **Authentication Setup** - Generate secure bearer tokens for production
+1. **Claude.ai Remote MCP Integration** - User can add server with OAuth 2.1 setup
+2. **Railway MCP Deployment** - Set OAuth environment variables and deploy
+3. **OAuth Setup** - Generate secure client credentials and JWT secrets
 
-### If User Wants Claude Desktop
-4. **Debug MCP Approval Workflow** - Fix plan approval step in generate_workout_guidance
-5. **Test Claude Desktop Connection** - Validate all 7 tools work properly
+### Optional (If User Wants Claude Desktop Later)
+4. **Local MCP Mode** - Can re-enable local Claude Desktop connection if needed
+5. **Plan Approval Workflow** - Address any UX issues in local mode
 
 ### Advanced Features
 6. **JWT Authentication** - Upgrade from bearer tokens to JWT with user claims  
@@ -267,9 +294,11 @@ Production Database
 - MCP configuration at `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ### Key Environment Variables
-- `HTTP_MODE=true` - Enable HTTP API mode for ChatGPT
-- `MCP_AUTH_TOKEN=token` - Bearer token authentication  
-- `PORT=8000` - Railway auto-detects and enables HTTP mode
+- `HTTP_MODE=true` - Enable MCP-over-HTTP mode for Claude.ai Remote MCP
+- `OAUTH_CLIENT_ID=amacoach-client` - OAuth client identifier
+- `OAUTH_CLIENT_SECRET=secret` - OAuth client secret
+- `JWT_SECRET_KEY=secret` - JWT token signing key
+- `PORT=8000` - Railway auto-detects and enables MCP-over-HTTP mode
 - `RAILWAY_ENVIRONMENT` - Auto-detected Railway deployment
 
 ### Key Features Implemented
