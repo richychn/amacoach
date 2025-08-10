@@ -887,11 +887,15 @@ async def main():
             
             from starlette.routing import Mount
             
+            # Public health endpoint (no auth required)
+            async def health_check(request):
+                return PlainTextResponse("OK")
+            
             app = Starlette(routes=[
+                Route("/health", health_check, methods=["GET"]),  # Health check first (no auth)
                 Route("/oauth/authorize", oauth_authorize, methods=["GET", "POST"]),
                 Route("/oauth/token", oauth_token, methods=["POST"]),
-                Mount("/", app=mcp_endpoint),
-                Route("/health", lambda request: PlainTextResponse("OK"), methods=["GET"]),
+                Mount("/", app=mcp_endpoint),  # All other routes require auth
             ])
             
             # Start uvicorn server
