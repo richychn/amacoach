@@ -130,20 +130,49 @@ AmaCoach is a functional MCP (Model Context Protocol) server that enables Claude
   - Restart Claude Desktop after config file creation
   - Test MCP tools: "List available exercises in my AmaCoach database"
 
+## ✅ COMPLETED UPDATES (August 2025)
+
+### HTTP API Integration - ✅ COMPLETE
+- ✅ **DONE** - Switched from UV to pyenv + requirements.txt
+  - Removed UV-related files (uv.lock, pyproject.toml)
+  - Installed pyenv and Python 3.10.18
+  - Created new virtual environment with pip
+  - Generated requirements.txt with all dependencies
+  
+- ✅ **DONE** - Added dual-mode HTTP API support
+  - Implemented FastAPI alongside existing MCP server
+  - Added bearer token authentication via MCP_AUTH_TOKEN
+  - Created HTTP endpoints: /tools, /call-tool, /health
+  - Fixed type errors and response formatting
+  - All 7 MCP tools now accessible via HTTP API
+
+### Deployment Modes - ✅ COMPLETE
+- ✅ **MCP Mode (Claude Desktop)**: `python server.py`
+- ✅ **HTTP API Mode (ChatGPT)**: `HTTP_MODE=true python server.py` 
+- ✅ **Railway Mode**: Automatic based on PORT/RAILWAY_ENVIRONMENT
+- ✅ **Authentication**: `MCP_AUTH_TOKEN=token HTTP_MODE=true python server.py`
+
+### Testing Results - ✅ VERIFIED
+- ✅ **HTTP API Working**: All tools tested and functional
+- ✅ **Authentication Working**: Bearer token validation confirmed
+- ✅ **Type Safety**: Fixed Pylance errors for production use
+- ✅ **Response Format**: Proper JSON responses for ChatGPT integration
+
 ## 📝 REMAINING TASKS
 
-### Priority: HIGH - Fix User Experience Issues
-- [ ] **HIGH** - Fix generate_workout_guidance workflow
+### Priority: MEDIUM - User Experience Issues
+- [ ] **MEDIUM** - Fix generate_workout_guidance workflow (Claude Desktop)
   - Claude Desktop skips plan approval step despite instructions
   - Need to ensure user sees and approves plans before saving
   - Consider alternative approaches (separate tools, different instruction format)
+  - **Note**: HTTP API mode works fine, issue specific to Claude Desktop
 
-### Priority: HIGH - Immediate Testing
-- [ ] **HIGH** - Validate Claude Desktop MCP connection
+### Priority: MEDIUM - Testing & Validation  
+- [ ] **MEDIUM** - Validate Claude Desktop MCP connection
   - User needs to download and configure Claude Desktop app
-  - Test all 6 MCP tools through conversational interface
-  - Verify 3-plan constraint works in practice
+  - Test all 7 MCP tools through conversational interface
   - Test equipment adaptation scenarios
+  - **Note**: HTTP API mode fully functional for ChatGPT
 
 ### Priority: MEDIUM - Documentation & Repository
 - [ ] **MEDIUM** - Initialize git repository and push to GitHub
@@ -179,24 +208,45 @@ AmaCoach is a functional MCP (Model Context Protocol) server that enables Claude
 
 ### Architecture Overview 🏗️
 ```
+DUAL-MODE ARCHITECTURE:
+
+Mode 1: Claude Desktop (MCP)
 Claude Desktop App (MCP Client)
-    ↓ stdio transport
+    ↓ stdio transport  
 Local MCP Server (server.py)
     ↓ SQLite operations
 AmaCoach Database (amacoach.db)
 
-Railway Deployment (HTTP mode)
-    ↓ health checks only
-Production database (with volume persistence)
+Mode 2: ChatGPT (HTTP API)
+ChatGPT Custom GPT
+    ↓ HTTP requests + Bearer auth
+FastAPI Server (server.py HTTP_MODE=true)
+    ↓ SQLite operations
+AmaCoach Database (amacoach.db)
+
+Mode 3: Railway Deployment
+Railway Cloud Platform
+    ↓ HTTP endpoints + Bearer auth
+Production FastAPI Server (PORT env var)
+    ↓ SQLite operations with volume persistence
+Production Database
 ```
 
 ## 🚀 Next Steps for New Claude Code Session
 
-1. **Check MCP Testing Results** - Ask user about Claude Desktop app testing results
-2. **Complete Git Repository Setup** - Initialize repo and push to GitHub if testing successful  
-3. **Address Any MCP Issues** - Debug connection problems or tool functionality
-4. **Plan Railway MCP Integration** - If local works, consider WebSocket transport for Railway
-5. **Production Documentation** - Create comprehensive setup guides
+### Immediate Actions Available
+1. **ChatGPT Integration** - User can create Custom GPT with HTTP API endpoints
+2. **Railway HTTP Deployment** - Set MCP_AUTH_TOKEN and deploy HTTP mode
+3. **Authentication Setup** - Generate secure bearer tokens for production
+
+### If User Wants Claude Desktop
+4. **Debug MCP Approval Workflow** - Fix plan approval step in generate_workout_guidance
+5. **Test Claude Desktop Connection** - Validate all 7 tools work properly
+
+### Advanced Features
+6. **JWT Authentication** - Upgrade from bearer tokens to JWT with user claims  
+7. **Rate Limiting** - Add per-user/per-app request limits
+8. **Monitoring** - Add logging and metrics for production use
 
 ## 📚 Key Technical Details for Context
 
@@ -208,11 +258,19 @@ Production database (with volume persistence)
 - **aiohttp** for health check endpoints
 
 ### File Organization
-- `server.py` - Main application with dual-mode operation
-- `database.py` - Data access layer with security
+- `server.py` - **UPDATED** - Main application with dual-mode operation (MCP + HTTP API)
+- `database.py` - Data access layer with security (3-plan constraints removed)
 - `models.py` - Data structures and validation
 - `config.py` - Environment and configuration management
+- `requirements.txt` - **NEW** - pip dependency management (replaces uv)
+- `.venv/` - **NEW** - pyenv-based virtual environment
 - MCP configuration at `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+### Key Environment Variables
+- `HTTP_MODE=true` - Enable HTTP API mode for ChatGPT
+- `MCP_AUTH_TOKEN=token` - Bearer token authentication  
+- `PORT=8000` - Railway auto-detects and enables HTTP mode
+- `RAILWAY_ENVIRONMENT` - Auto-detected Railway deployment
 
 ### Key Features Implemented
 - **User data isolation** - Each user only sees their own data

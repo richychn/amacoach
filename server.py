@@ -15,6 +15,7 @@ The server provides secure data storage and retrieval with user isolation.
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -23,6 +24,12 @@ from mcp.server.models import InitializationOptions
 from mcp.types import ServerCapabilities, ToolsCapability, ResourcesCapability
 from mcp.types import Resource, Tool, TextContent
 from pydantic import AnyUrl
+from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+from pydantic import BaseModel
+import uvicorn
 
 from database import Database, DatabaseError, UserPermissionError
 from models import User
@@ -37,6 +44,29 @@ db = Database(config.database_path)
 
 # Create MCP server
 server = Server("amacoach")
+
+# HTTP API models
+class CallToolRequest(BaseModel):
+    name: str
+    arguments: dict = {}
+
+class CallToolResponse(BaseModel):
+    content: list
+    isError: bool = False
+
+# Authentication for HTTP API
+security = HTTPBearer(auto_error=False)
+
+async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify bearer token if MCP_AUTH_TOKEN is set"""
+    required_token = os.environ.get("MCP_AUTH_TOKEN")
+    if required_token:
+        if not credentials or credentials.credentials != required_token:
+            raise HTTPException(status_code=401, detail="Invalid or missing token")
+    return credentials
+
+# Create FastAPI app for HTTP mode
+http_app = FastAPI(title="AmaCoach HTTP API", version="0.1.0")
 
 
 def get_user_from_context(context) -> str:
@@ -654,6 +684,58 @@ async def handle_generate_workout_guidance(arguments: Dict[str, Any], user_id: s
     )]
 
 
+# HTTP API endpoints
+@http_app.get("/tools")
+async def http_list_tools(credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+    """List available MCP tools via HTTP"""
+    tools = await handle_list_tools()
+    return {"tools": [{"name": tool.name, "description": tool.description, "inputSchema": tool.inputSchema} for tool in tools]}
+
+@http_app.post("/call-tool", response_model=CallToolResponse)
+async def http_call_tool(request: CallToolRequest, credentials: HTTPAuthorizationCredentials = Depends(verify_token)):
+    """Execute an MCP tool via HTTP"""
+    try:
+        # Extract user_id for HTTP requests
+        # In a real implementation, you'd extract user info from the JWT token
+        user_id = "http_user"  # Default user for HTTP API
+        
+        # Route to appropriate MCP tool handler
+        if request.name == "list_exercises":
+            result = await handle_list_exercises(request.arguments, user_id)
+        elif request.name == "create_exercise":
+            result = await handle_create_exercise(request.arguments, user_id)
+        elif request.name == "save_workout_plan":
+            result = await handle_save_workout_plan(request.arguments, user_id)
+        elif request.name == "load_workout_plan":
+            result = await handle_load_workout_plan(request.arguments, user_id)
+        elif request.name == "save_personal_record":
+            result = await handle_save_personal_record(request.arguments, user_id)
+        elif request.name == "load_personal_records":
+            result = await handle_load_personal_records(request.arguments, user_id)
+        elif request.name == "generate_workout_guidance":
+            result = await handle_generate_workout_guidance(request.arguments, user_id)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown tool: {request.name}")
+            
+        # Convert MCP result to HTTP response format
+        # MCP handlers return List[TextContent] directly
+        if isinstance(result, list):
+            content = result
+        else:
+            # Fallback for unexpected result types
+            content = [{"type": "text", "text": str(result)}]
+            
+        return CallToolResponse(content=content, isError=False)
+    except Exception as e:
+        logger.error(f"Error calling tool {request.name}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@http_app.get("/health")
+async def http_health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "server": "amacoach-http-api"}
+
+
 @server.list_resources()
 async def handle_list_resources() -> List[Resource]:
     """List available resources (none for this implementation)."""
@@ -727,9 +809,24 @@ async def main():
         logger.info(f"Debug mode: {config.debug_mode}")
         logger.info("Plan limits: Unlimited active plans with Claude 3-plan set lifecycle management")
         
-        # Check if running on Railway (has PORT env var)
-        if os.getenv('PORT') or os.getenv('RAILWAY_ENVIRONMENT'):
-            # Railway deployment - run HTTP server for health checks
+        # Check if HTTP_MODE environment variable is set for API mode
+        if os.getenv('HTTP_MODE') == 'true' or os.getenv('PORT'):
+            # HTTP API mode - serve HTTP endpoints for ChatGPT/external integrations
+            logger.info("HTTP mode detected - starting HTTP API server")
+            port = int(os.environ.get("PORT", 8000))
+            
+            # Start FastAPI server with uvicorn
+            uvicorn_config = uvicorn.Config(
+                http_app, 
+                host="0.0.0.0", 
+                port=port,
+                log_level="info"
+            )
+            server_instance = uvicorn.Server(uvicorn_config)
+            await server_instance.serve()
+            
+        elif os.getenv('RAILWAY_ENVIRONMENT'):
+            # Railway deployment - run HTTP server for health checks only
             logger.info("Railway environment detected - starting HTTP health server")
             await run_http_server()
             
@@ -737,7 +834,7 @@ async def main():
             import asyncio
             await asyncio.Event().wait()
         else:
-            # Local development - run MCP stdio server
+            # Local development - run MCP stdio server for Claude Desktop
             logger.info("Local environment detected - starting MCP stdio server")
             from mcp.server.stdio import stdio_server
             
