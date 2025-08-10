@@ -751,10 +751,10 @@ async def main():
             
             # Create MCP endpoint that handles the protocol properly
             async def mcp_endpoint(request):
-                """Handle MCP requests over HTTP"""
+                """Handle MCP requests over HTTP - supports both POST and GET per MCP Streamable HTTP spec"""
                 try:
                     if request.method == "POST":
-                        # Get the request body
+                        # POST: Handle JSON-RPC messages (main MCP communication)
                         body = await request.body()
                         request_data = json.loads(body)
                         
@@ -836,8 +836,42 @@ async def main():
                             }
                         
                         return JSONResponse(response)
+                    
+                    elif request.method == "GET":
+                        # GET: Open Server-Sent Events (SSE) stream for server-to-client communication
+                        # This allows the server to send messages to the client without client first sending data
+                        from starlette.responses import StreamingResponse
+                        
+                        async def event_stream():
+                            # Send initial SSE connection established message
+                            yield f"data: {json.dumps({'type': 'connection', 'status': 'established'})}\n\n"
+                            
+                            # For a basic implementation, we can just keep the connection alive
+                            # In a full implementation, this would handle server-initiated messages
+                            import asyncio
+                            while True:
+                                await asyncio.sleep(30)  # Keep-alive every 30 seconds
+                                yield f"data: {json.dumps({'type': 'ping', 'timestamp': int(datetime.now().timestamp())})}\n\n"
+                        
+                        return StreamingResponse(
+                            event_stream(),
+                            media_type="text/event-stream",
+                            headers={
+                                "Cache-Control": "no-cache",
+                                "Connection": "keep-alive",
+                                "Access-Control-Allow-Origin": "*",
+                                "Access-Control-Allow-Headers": "Cache-Control"
+                            }
+                        )
+                    
+                    elif request.method == "DELETE":
+                        # DELETE: Explicit session termination (optional)
+                        session_id = request.headers.get("Mcp-Session-Id")
+                        logger.info(f"Session termination requested for session: {session_id}")
+                        return JSONResponse({"message": "Session terminated"}, status_code=200)
+                    
                     else:
-                        return JSONResponse({"error": "Only POST requests allowed"}, status_code=405)
+                        return JSONResponse({"error": f"Method {request.method} not allowed"}, status_code=405)
                         
                 except Exception as e:
                     logger.error(f"MCP request failed: {str(e)}")
@@ -894,7 +928,7 @@ async def main():
             app = Starlette(routes=[
                 Route("/health", http_health_check, methods=["GET"]),
                 Route("/register", register_client, methods=["POST"]),  # RFC 7591 DCR
-                Route("/", mcp_endpoint, methods=["POST"]),  # MCP requests
+                Route("/", mcp_endpoint, methods=["GET", "POST", "DELETE"]),  # MCP Streamable HTTP
             ])
             
             # Start uvicorn server
