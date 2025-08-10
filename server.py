@@ -768,22 +768,45 @@ async def main():
                         
                         if method == "tools/list":
                             tools = await handle_list_tools()
+                            # Convert Tool objects to proper format
+                            tools_list = []
+                            for tool in tools:
+                                if hasattr(tool, 'model_dump'):
+                                    tools_list.append(tool.model_dump())
+                                else:
+                                    # Handle Tool manually
+                                    tools_list.append({
+                                        "name": getattr(tool, 'name', ''),
+                                        "description": getattr(tool, 'description', ''),
+                                        "inputSchema": getattr(tool, 'inputSchema', {})
+                                    })
                             response = {
                                 "jsonrpc": "2.0",
                                 "id": request_id,
                                 "result": {
-                                    "tools": [tool.model_dump() for tool in tools]
+                                    "tools": tools_list
                                 }
                             }
                         elif method == "tools/call":
                             tool_name = params.get("name")
                             arguments = params.get("arguments", {})
                             result = await handle_call_tool(tool_name, arguments, context)
+                            # Convert TextContent objects to proper format
+                            content_list = []
+                            for content in result:
+                                if hasattr(content, 'model_dump'):
+                                    content_list.append(content.model_dump())
+                                else:
+                                    # Handle TextContent manually
+                                    content_list.append({
+                                        "type": getattr(content, 'type', 'text'),
+                                        "text": getattr(content, 'text', str(content))
+                                    })
                             response = {
                                 "jsonrpc": "2.0", 
                                 "id": request_id,
                                 "result": {
-                                    "content": [content.model_dump() for content in result]
+                                    "content": content_list
                                 }
                             }
                         elif method == "initialize":
@@ -818,9 +841,17 @@ async def main():
                         
                 except Exception as e:
                     logger.error(f"MCP request failed: {str(e)}")
+                    # Safely get request_id if request_data was parsed
+                    request_id = None
+                    try:
+                        if 'request_data' in locals() and request_data:
+                            request_id = request_data.get("id")
+                    except:
+                        pass
+                    
                     return JSONResponse({
                         "jsonrpc": "2.0",
-                        "id": request_data.get("id") if 'request_data' in locals() else None,
+                        "id": request_id,
                         "error": {
                             "code": -32603,
                             "message": "Internal error",
@@ -833,8 +864,36 @@ async def main():
                 logger.info("HTTP health check accessed")
                 return PlainTextResponse("OK", status_code=200)
             
+            # Dynamic Client Registration endpoint for Claude.ai Remote MCP
+            async def register_client(request):
+                """Handle RFC 7591 Dynamic Client Registration for Claude.ai"""
+                try:
+                    # For authentication-free access, return a simple client registration
+                    # In production, this would validate the request and create actual client credentials
+                    registration_response = {
+                        "client_id": "amacoach-claude-client",
+                        "client_secret": "not-required-for-free-access",
+                        "client_id_issued_at": int(datetime.now().timestamp()),
+                        "client_name": "Claude.ai MCP Client",
+                        "token_endpoint_auth_method": "none",  # No authentication required
+                        "grant_types": ["client_credentials"],
+                        "response_types": ["token"],
+                        "scope": "mcp:tools mcp:resources"
+                    }
+                    
+                    logger.info("Client registration request received - returning free access credentials")
+                    return JSONResponse(registration_response)
+                    
+                except Exception as e:
+                    logger.error(f"Client registration failed: {str(e)}")
+                    return JSONResponse({
+                        "error": "invalid_client_metadata",
+                        "error_description": "Client registration failed"
+                    }, status_code=400)
+            
             app = Starlette(routes=[
                 Route("/health", http_health_check, methods=["GET"]),
+                Route("/register", register_client, methods=["POST"]),  # RFC 7591 DCR
                 Route("/", mcp_endpoint, methods=["POST"]),  # MCP requests
             ])
             
