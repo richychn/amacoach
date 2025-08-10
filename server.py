@@ -846,6 +846,23 @@ async def main():
                                     "instructions": "I'm an MCP server providing fitness coaching tools. Use generate_workout_guidance first when users ask for workout planning help."
                                 }
                             }
+                        elif method == "notifications/initialized":
+                            # Handle MCP initialization notification
+                            # This is sent by Claude.ai to indicate it's ready to use the MCP server
+                            logger.info("Claude.ai sent initialization notification - server is ready")
+                            response = {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "result": {
+                                    "status": "ready",
+                                    "message": "AmaCoach MCP server initialized successfully",
+                                    "serverInfo": {
+                                        "name": "amacoach",
+                                        "version": "0.1.0",
+                                        "description": "Fitness coaching MCP server with workout planning and exercise database"
+                                    }
+                                }
+                            }
                         else:
                             response = {
                                 "jsonrpc": "2.0",
